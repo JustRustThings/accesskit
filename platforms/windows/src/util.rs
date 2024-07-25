@@ -5,7 +5,10 @@
 
 use accesskit::Point;
 use accesskit_consumer::TreeState;
-use std::sync::{Arc, Weak};
+use std::{
+    mem::ManuallyDrop,
+    sync::{Arc, Weak},
+};
 use windows::{
     core::*,
     Win32::{
@@ -16,98 +19,130 @@ use windows::{
     },
 };
 
-pub(crate) struct Variant(VARIANT);
+pub(crate) struct VariantFactory(VARENUM, VARIANT_0_0_0);
 
-impl From<Variant> for VARIANT {
-    fn from(variant: Variant) -> Self {
-        variant.0
+impl From<VariantFactory> for VARIANT {
+    fn from(factory: VariantFactory) -> Self {
+        let VariantFactory(vt, value) = factory;
+        Self {
+            Anonymous: VARIANT_0 {
+                Anonymous: ManuallyDrop::new(VARIANT_0_0 {
+                    vt: VARENUM(vt.0),
+                    wReserved1: 0,
+                    wReserved2: 0,
+                    wReserved3: 0,
+                    Anonymous: value,
+                }),
+            },
+        }
     }
 }
 
-impl Variant {
+impl VariantFactory {
     pub(crate) fn empty() -> Self {
-        Self(VARIANT::default())
+        // The choice of value field is probably arbitrary, but it seems
+        // reasonable to make sure that at least a whole machine word is zero.
+        Self(VT_EMPTY, VARIANT_0_0_0 { llVal: 0 })
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0 == VT_EMPTY
     }
 }
 
-impl From<&str> for Variant {
+impl From<&str> for VariantFactory {
     fn from(value: &str) -> Self {
-        Self(value.into())
+        let value: BSTR = value.into();
+        value.into()
     }
 }
 
-impl From<String> for Variant {
+impl From<String> for VariantFactory {
     fn from(value: String) -> Self {
         let value: BSTR = value.into();
-        Self(value.into())
+        value.into()
     }
 }
 
-impl From<BSTR> for Variant {
+impl From<BSTR> for VariantFactory {
     fn from(value: BSTR) -> Self {
-        Self(value.into())
+        Self(
+            VT_BSTR,
+            VARIANT_0_0_0 {
+                bstrVal: ManuallyDrop::new(value),
+            },
+        )
     }
 }
 
-impl From<IUnknown> for Variant {
+impl From<IUnknown> for VariantFactory {
     fn from(value: IUnknown) -> Self {
-        Self(value.into())
+        Self(
+            VT_UNKNOWN,
+            VARIANT_0_0_0 {
+                punkVal: ManuallyDrop::new(Some(value)),
+            },
+        )
     }
 }
 
-impl From<i32> for Variant {
+impl From<i32> for VariantFactory {
     fn from(value: i32) -> Self {
-        Self(value.into())
+        Self(VT_I4, VARIANT_0_0_0 { lVal: value })
     }
 }
 
-impl From<f64> for Variant {
+impl From<f64> for VariantFactory {
     fn from(value: f64) -> Self {
-        Self(value.into())
+        Self(VT_R8, VARIANT_0_0_0 { dblVal: value })
     }
 }
 
-impl From<ToggleState> for Variant {
+impl From<ToggleState> for VariantFactory {
     fn from(value: ToggleState) -> Self {
-        Self(value.0.into())
+        value.0.into()
     }
 }
 
-impl From<LiveSetting> for Variant {
+impl From<LiveSetting> for VariantFactory {
     fn from(value: LiveSetting) -> Self {
-        Self(value.0.into())
+        value.0.into()
     }
 }
 
-impl From<CaretPosition> for Variant {
+impl From<CaretPosition> for VariantFactory {
     fn from(value: CaretPosition) -> Self {
-        Self(value.0.into())
+        value.0.into()
     }
 }
 
-impl From<UIA_CONTROLTYPE_ID> for Variant {
+impl From<UIA_CONTROLTYPE_ID> for VariantFactory {
     fn from(value: UIA_CONTROLTYPE_ID) -> Self {
-        Self(value.0.into())
+        (value.0 as i32).into()
     }
 }
 
-impl From<OrientationType> for Variant {
+impl From<OrientationType> for VariantFactory {
     fn from(value: OrientationType) -> Self {
-        Self(value.0.into())
+        value.0.into()
     }
 }
 
-impl From<bool> for Variant {
+const VARIANT_FALSE: i16 = 0i16;
+const VARIANT_TRUE: i16 = -1i16;
+
+impl From<bool> for VariantFactory {
     fn from(value: bool) -> Self {
-        Self(value.into())
+        Self(
+            VT_BOOL,
+            VARIANT_0_0_0 {
+                boolVal: VARIANT_BOOL(if value { VARIANT_TRUE } else { VARIANT_FALSE }),
+            },
+        )
     }
 }
 
-impl<T: Into<Variant>> From<Option<T>> for Variant {
+impl<T: Into<VariantFactory>> From<Option<T>> for VariantFactory {
     fn from(value: Option<T>) -> Self {
         value.map_or_else(Self::empty, T::into)
     }
@@ -159,11 +194,11 @@ pub(crate) enum QueuedEvent {
 }
 
 pub(crate) fn not_implemented() -> Error {
-    E_NOTIMPL.into()
+    Error::new(E_NOTIMPL, "".into())
 }
 
 pub(crate) fn invalid_arg() -> Error {
-    E_INVALIDARG.into()
+    Error::new(E_INVALIDARG, "".into())
 }
 
 pub(crate) fn required_param<T>(param: Option<&T>) -> Result<&T> {
@@ -171,11 +206,11 @@ pub(crate) fn required_param<T>(param: Option<&T>) -> Result<&T> {
 }
 
 pub(crate) fn element_not_available() -> Error {
-    HRESULT(UIA_E_ELEMENTNOTAVAILABLE as _).into()
+    Error::new(HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32), "".into())
 }
 
 pub(crate) fn invalid_operation() -> Error {
-    HRESULT(UIA_E_INVALIDOPERATION as _).into()
+    Error::new(HRESULT(UIA_E_INVALIDOPERATION as i32), "".into())
 }
 
 pub(crate) fn client_top_left(hwnd: HWND) -> Point {
